@@ -27,13 +27,15 @@ import {
   Users,
   Timer,
   TowerControl,
-  Mountain
+  Mountain,
+  Building,
+  Radio
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
 // --- Types ---
 
-type NodeType = 'empty' | 'supply' | 'armory' | 'special_armory' | 'encounter' | 'event' | 'exit' | 'start' | 'artillery' | 'ruins' | 'medical_point' | 'refugee_point' | 'command_center' | 'mountain';
+type NodeType = 'empty' | 'supply' | 'armory' | 'special_armory' | 'encounter' | 'event' | 'exit' | 'start' | 'artillery' | 'ruins' | 'medical_point' | 'refugee_point' | 'command_center' | 'mountain' | 'city' | 'sos';
 
 interface Node {
   id: string;
@@ -56,6 +58,7 @@ interface GameState {
   medKits: number; // New: Medical kits
   waitingTurns: number; // New: Turns to wait at refugee point
   artilleryStrikes: number; // New: Available strikes
+  sosRemainingTurns: number; // New: SOS signal duration
   isTargeting: boolean; // New: Targeting mode state
   damageReduction: number;
   moveSanCost: number;
@@ -104,6 +107,7 @@ const generateMap = (barrierColumn: number): Node[][] => {
   // Set Start and Exit
   newMap[startY][0].type = 'start';
   newMap[exitY][GRID_WIDTH - 1].type = 'exit';
+  newMap[exitY][GRID_WIDTH - 1].isExplored = true; // Mark exit as visible
 
   // Place Special Armory (Visible on map)
   const saX = barrierColumn + 1;
@@ -116,6 +120,18 @@ const generateMap = (barrierColumn: number): Node[][] => {
   const ccY = 6;
   newMap[ccY][ccX].type = 'command_center';
   newMap[ccY][ccX].isExplored = true;
+
+  // Place 2 Cities (Visible on map, behind barrier)
+  let citiesPlaced = 0;
+  while (citiesPlaced < 2) {
+    const cx = Math.floor(Math.random() * (GRID_WIDTH - (barrierColumn + 2))) + (barrierColumn + 1);
+    const cy = Math.floor(Math.random() * GRID_HEIGHT);
+    if (newMap[cy][cx].type === 'empty') {
+      newMap[cy][cx].type = 'city';
+      newMap[cy][cx].isExplored = true;
+      citiesPlaced++;
+    }
+  }
 
   // Place Medical Point (Visible on map, 2 columns after barrier)
   const medX = Math.min(GRID_WIDTH - 2, barrierColumn + 2);
@@ -191,6 +207,7 @@ export default function App() {
       medKits: 0,
       waitingTurns: 0,
       artilleryStrikes: 0,
+      sosRemainingTurns: 0,
       isTargeting: false,
       damageReduction: 0,
       moveSanCost: INITIAL_MOVE_SAN_COST,
@@ -236,6 +253,8 @@ export default function App() {
       let newWaitingTurns = prev.waitingTurns - 1;
       let newHp = prev.hp;
       let newSan = prev.san;
+      let newMap = prev.map;
+      let newSosRemainingTurns = prev.sosRemainingTurns;
 
       // Abyss Advance Logic
       if (newTurn % ABYSS_SPEED === 0) {
@@ -243,6 +262,31 @@ export default function App() {
           newBarrierDurability -= 1;
         } else {
           newAbyssColumn += 1;
+        }
+      }
+
+      // SOS Logic
+      if (newSosRemainingTurns > 0) {
+        newSosRemainingTurns -= 1;
+        if (newSosRemainingTurns === 0) {
+          newMap = newMap.map(row => row.map(node => node.type === 'sos' ? { ...node, type: 'ruins' } : node));
+          addLog('SOS信号消失了。');
+        }
+      } else if (newSosRemainingTurns === 0 && Math.random() < 0.4) {
+        const possibleNodes: {x: number, y: number}[] = [];
+        for (let y = 0; y < GRID_HEIGHT; y++) {
+          for (let x = newAbyssColumn + 1; x < GRID_WIDTH - 1; x++) {
+            if (x === prev.playerPos.x && y === prev.playerPos.y) continue;
+            if (newMap[y][x].type === 'empty' || newMap[y][x].type === 'ruins') {
+              possibleNodes.push({x, y});
+            }
+          }
+        }
+        if (possibleNodes.length > 0) {
+          const pick = possibleNodes[Math.floor(Math.random() * possibleNodes.length)];
+          newMap = newMap.map(row => row.map(node => node.x === pick.x && node.y === pick.y ? { ...node, type: 'sos', isExplored: true } : node));
+          newSosRemainingTurns = 4;
+          addLog('接收到微弱的SOS信号！位置已在地图上标出。');
         }
       }
 
@@ -269,6 +313,8 @@ export default function App() {
         waitingTurns: newWaitingTurns,
         hp: newHp,
         san: newSan,
+        map: newMap,
+        sosRemainingTurns: newSosRemainingTurns,
         gameStatus: newStatus
       };
     });
@@ -353,6 +399,7 @@ export default function App() {
     let newWaitingTurns = state.waitingTurns;
     let newBarrierDurability = state.barrierDurability;
     let newStatus = state.gameStatus;
+    let newSosRemainingTurns = state.sosRemainingTurns;
 
     // Create a copy of the map to avoid direct mutations
     let newMap = state.map.map(row => row.map(node => ({ ...node })));
@@ -398,6 +445,24 @@ export default function App() {
         } else {
           addLog('山区崎岖难行，你不得不原地休整以寻找出路。');
         }
+        break;
+      case 'city':
+        newWaitingTurns = 1;
+        newShards += 10;
+        addLog('你进入了一座废弃城市，在搜寻物资时被迫滞留，但获得了10个碎片。');
+        newMap[newY][newX].type = 'ruins';
+        break;
+      case 'sos':
+        newWaitingTurns = 1;
+        if (newAmmo > 0) {
+          newAmmo -= 1;
+          newShards += 5;
+          addLog('你响应了SOS信号并提供了弹药支援，获得了5个碎片作为谢礼。');
+        } else {
+          addLog('你响应了SOS信号，但你没有多余的弹药可以提供。');
+        }
+        newMap[newY][newX].type = 'ruins';
+        newSosRemainingTurns = 0; // SOS handled
         break;
       case 'artillery':
         newArtilleryStrikes += 1;
@@ -452,13 +517,38 @@ export default function App() {
         // Destroy special nodes hit by Abyss
         newMap.forEach(row => {
           row.forEach(node => {
-            if (node.x === newAbyssColumn && ['special_armory', 'medical_point', 'command_center'].includes(node.type)) {
-              const typeName = node.type === 'special_armory' ? '军械库' : node.type === 'medical_point' ? '医疗站' : '指挥部';
+            if (node.x === newAbyssColumn && ['special_armory', 'medical_point', 'command_center', 'city', 'sos'].includes(node.type)) {
+              const typeName = node.type === 'special_armory' ? '军械库' : node.type === 'medical_point' ? '医疗站' : node.type === 'command_center' ? '指挥部' : node.type === 'city' ? '城市' : 'SOS信号源';
               addLog(`噩耗：${typeName}已被深渊主力摧毁！`);
               node.type = 'ruins';
             }
           });
         });
+      }
+    }
+
+    // SOS Logic
+    if (newSosRemainingTurns > 0) {
+      newSosRemainingTurns -= 1;
+      if (newSosRemainingTurns === 0) {
+        newMap = newMap.map(row => row.map(node => node.type === 'sos' ? { ...node, type: 'ruins' } : node));
+        addLog('SOS信号消失了。');
+      }
+    } else if (newSosRemainingTurns === 0 && Math.random() < 0.4) {
+      const possibleNodes: {x: number, y: number}[] = [];
+      for (let y = 0; y < GRID_HEIGHT; y++) {
+        for (let x = newAbyssColumn + 1; x < GRID_WIDTH - 1; x++) {
+          if (x === newX && y === newY) continue;
+          if (newMap[y][x].type === 'empty' || newMap[y][x].type === 'ruins') {
+            possibleNodes.push({x, y});
+          }
+        }
+      }
+      if (possibleNodes.length > 0) {
+        const pick = possibleNodes[Math.floor(Math.random() * possibleNodes.length)];
+        newMap = newMap.map(row => row.map(node => node.x === pick.x && node.y === pick.y ? { ...node, type: 'sos', isExplored: true } : node));
+        newSosRemainingTurns = 4;
+        addLog('接收到微弱的SOS信号！位置已在地图上标出。');
       }
     }
 
@@ -488,6 +578,7 @@ export default function App() {
       turn: newTurn,
       abyssColumn: newAbyssColumn,
       map: newMap,
+      sosRemainingTurns: newSosRemainingTurns,
       gameStatus: newStatus,
     }));
   }, [state]);
@@ -506,6 +597,7 @@ export default function App() {
       medKits: 0,
       waitingTurns: 0,
       artilleryStrikes: 0,
+      sosRemainingTurns: 0,
       isTargeting: false,
       damageReduction: 0,
       moveSanCost: INITIAL_MOVE_SAN_COST,
@@ -883,6 +975,8 @@ const NodeCard: React.FC<NodeCardProps> = ({ node, isPlayer, isAbyss, isTargetin
       case 'medical_point': return <HeartPulse className="w-5 h-5 text-pink-500 shadow-[0_0_10px_rgba(236,72,153,0.4)]" />;
       case 'refugee_point': return <Users className="w-5 h-5 text-blue-400 shadow-[0_0_10px_rgba(96,165,250,0.4)]" />;
       case 'mountain': return <Mountain className="w-5 h-5 text-stone-400 shadow-[0_0_10px_rgba(120,113,108,0.4)]" />;
+      case 'city': return <Building className="w-5 h-5 text-indigo-400 shadow-[0_0_10px_rgba(129,140,248,0.4)]" />;
+      case 'sos': return <Radio className="w-5 h-5 text-red-500 animate-pulse shadow-[0_0_10px_rgba(239,68,68,0.4)]" />;
       case 'special_armory': return <Warehouse className="w-5 h-5 text-amber-400 shadow-[0_0_10px_rgba(251,191,36,0.5)]" />;
       case 'command_center': return <TowerControl className="w-5 h-5 text-blue-500 shadow-[0_0_10px_rgba(59,130,246,0.5)]" />;
       case 'ruins': return <div className="w-2 h-2 bg-zinc-700 rounded-full opacity-50" />;
