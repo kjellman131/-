@@ -29,13 +29,18 @@ import {
   TowerControl,
   Mountain,
   Building,
-  Radio
+  Radio,
+  Ghost,
+  Trophy,
+  BookOpen,
+  Play,
+  Info
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
 // --- Types ---
 
-type NodeType = 'empty' | 'supply' | 'armory' | 'special_armory' | 'encounter' | 'event' | 'exit' | 'start' | 'artillery' | 'ruins' | 'medical_point' | 'refugee_point' | 'command_center' | 'mountain' | 'city' | 'sos';
+type NodeType = 'empty' | 'supply' | 'armory' | 'special_armory' | 'encounter' | 'event' | 'exit' | 'start' | 'artillery' | 'ruins' | 'medical_point' | 'refugee_point' | 'command_center' | 'mountain' | 'city' | 'sos' | 'fake_sos';
 
 interface Node {
   id: string;
@@ -47,7 +52,21 @@ interface Node {
   isTargeted?: boolean; // For artillery targeting UI
 }
 
+interface Enemy {
+  id: string;
+  x: number;
+  y: number;
+}
+
+interface Achievement {
+  id: string;
+  title: string;
+  description: string;
+  unlocked: boolean;
+}
+
 interface GameState {
+  screen: 'menu' | 'game' | 'tutorial' | 'achievements';
   playerPos: { x: number; y: number };
   hp: number;
   maxHp: number;
@@ -55,11 +74,11 @@ interface GameState {
   maxSan: number;
   ammo: number;
   shards: number;
-  medKits: number; // New: Medical kits
-  waitingTurns: number; // New: Turns to wait at refugee point
-  artilleryStrikes: number; // New: Available strikes
-  sosRemainingTurns: number; // New: SOS signal duration
-  isTargeting: boolean; // New: Targeting mode state
+  medKits: number;
+  waitingTurns: number;
+  artilleryStrikes: number;
+  sosRemainingTurns: number;
+  isTargeting: boolean;
   damageReduction: number;
   moveSanCost: number;
   barrierColumn: number;
@@ -67,6 +86,8 @@ interface GameState {
   turn: number;
   abyssColumn: number;
   map: Node[][];
+  enemies: Enemy[];
+  achievements: Achievement[];
   isGameOver: boolean;
   gameStatus: 'playing' | 'won' | 'lost';
   logs: string[];
@@ -191,12 +212,22 @@ const generateMap = (barrierColumn: number): Node[][] => {
   return newMap;
 };
 
+const INITIAL_ACHIEVEMENTS: Achievement[] = [
+  { id: 'win', title: '逃离', description: '成功抵达逃生点', unlocked: false },
+  { id: 'lose', title: '失败', description: '在深渊中陨落', unlocked: false },
+  { id: 'humanitarian', title: '人道主义', description: '协助撤离的难民', unlocked: false },
+  { id: 'fully_armed', title: '全副武装', description: '进入前哨军械库', unlocked: false },
+  { id: 'guerrilla', title: '游击战', description: '击败一支深渊渗透部队', unlocked: false },
+  { id: 'fire_support', title: '火力支援', description: '使用一次火炮打击', unlocked: false },
+];
+
 // --- Main Component ---
 
 export default function App() {
   const [state, setState] = useState<GameState>(() => {
     const barrierColumn = Math.floor(Math.random() * 4) + 9;
     return {
+      screen: 'menu',
       playerPos: { x: 0, y: 5 },
       hp: 100,
       maxHp: 100,
@@ -216,11 +247,26 @@ export default function App() {
       turn: 0,
       abyssColumn: -1,
       map: generateMap(barrierColumn),
+      enemies: [],
+      achievements: INITIAL_ACHIEVEMENTS,
       isGameOver: false,
       gameStatus: 'playing',
       logs: ['你醒来在深渊的边缘。前方有一道旧时代的防线。'],
     };
   });
+
+  const unlockAchievement = (id: string) => {
+    setState(prev => {
+      const alreadyUnlocked = prev.achievements.find(a => a.id === id)?.unlocked;
+      if (alreadyUnlocked) return prev;
+      
+      const newAchievements = prev.achievements.map(a => 
+        a.id === id ? { ...a, unlocked: true } : a
+      );
+      addLog(`成就达成：${prev.achievements.find(a => a.id === id)?.title}`);
+      return { ...prev, achievements: newAchievements };
+    });
+  };
 
   const addLog = (msg: string) => {
     setState(prev => ({
@@ -255,6 +301,7 @@ export default function App() {
       let newSan = prev.san;
       let newMap = prev.map;
       let newSosRemainingTurns = prev.sosRemainingTurns;
+      let newEnemies = [...prev.enemies];
 
       // Abyss Advance Logic
       if (newTurn % ABYSS_SPEED === 0) {
@@ -265,28 +312,77 @@ export default function App() {
         }
       }
 
+      // Enemy Movement
+      newEnemies = newEnemies.map(enemy => {
+        const dirs = [{x: 0, y: 1}, {x: 0, y: -1}, {x: 1, y: 0}, {x: -1, y: 0}];
+        const validDirs = dirs.filter(d => {
+          const nx = enemy.x + d.x;
+          const ny = enemy.y + d.y;
+          if (nx < 0 || nx >= GRID_WIDTH || ny < 0 || ny >= GRID_HEIGHT) return false;
+          const node = newMap[ny][nx];
+          return (node.type === 'empty' || node.type === 'ruins') && !newEnemies.some(e => e.x === nx && e.y === ny && e.id !== enemy.id);
+        });
+
+        if (validDirs.length > 0) {
+          const dir = validDirs[Math.floor(Math.random() * validDirs.length)];
+          const nx = enemy.x + dir.x;
+          const ny = enemy.y + dir.y;
+          
+          if (nx === prev.playerPos.x && ny === prev.playerPos.y) {
+            const dmg = prev.ammo >= 5 ? 10 : 35;
+            newHp -= dmg;
+            addLog(`深渊渗透部队撞上了你！损失了 ${dmg} HP。`);
+            unlockAchievement('guerrilla');
+            return null;
+          }
+          return { ...enemy, x: nx, y: ny };
+        }
+        return enemy;
+      }).filter(Boolean) as Enemy[];
+
       // SOS Logic
       if (newSosRemainingTurns > 0) {
         newSosRemainingTurns -= 1;
         if (newSosRemainingTurns === 0) {
-          newMap = newMap.map(row => row.map(node => node.type === 'sos' ? { ...node, type: 'ruins' } : node));
-          addLog('SOS信号消失了。');
+          newMap = newMap.map(row => row.map(node => (node.type === 'sos' || node.type === 'fake_sos') ? { ...node, type: 'ruins' } : node));
+          addLog('信号消失了。');
         }
-      } else if (newSosRemainingTurns === 0 && Math.random() < 0.4) {
-        const possibleNodes: {x: number, y: number}[] = [];
-        for (let y = 0; y < GRID_HEIGHT; y++) {
-          for (let x = newAbyssColumn + 1; x < GRID_WIDTH - 1; x++) {
-            if (x === prev.playerPos.x && y === prev.playerPos.y) continue;
-            if (newMap[y][x].type === 'empty' || newMap[y][x].type === 'ruins') {
-              possibleNodes.push({x, y});
+      } else if (newSosRemainingTurns === 0) {
+        // Real SOS check
+        if (Math.random() < 0.4) {
+          const possibleNodes: {x: number, y: number}[] = [];
+          for (let y = 0; y < GRID_HEIGHT; y++) {
+            for (let x = newAbyssColumn + 1; x < GRID_WIDTH - 1; x++) {
+              if (x === prev.playerPos.x && y === prev.playerPos.y) continue;
+              if (newMap[y][x].type === 'empty' || newMap[y][x].type === 'ruins') {
+                possibleNodes.push({x, y});
+              }
             }
           }
+          if (possibleNodes.length > 0) {
+            const pick = possibleNodes[Math.floor(Math.random() * possibleNodes.length)];
+            newMap = newMap.map(row => row.map(node => node.x === pick.x && node.y === pick.y ? { ...node, type: 'sos', isExplored: true } : node));
+            newSosRemainingTurns = 4;
+            addLog('接收到微弱的SOS信号！位置已在地图上标出。');
+          }
         }
-        if (possibleNodes.length > 0) {
-          const pick = possibleNodes[Math.floor(Math.random() * possibleNodes.length)];
-          newMap = newMap.map(row => row.map(node => node.x === pick.x && node.y === pick.y ? { ...node, type: 'sos', isExplored: true } : node));
-          newSosRemainingTurns = 4;
-          addLog('接收到微弱的SOS信号！位置已在地图上标出。');
+        // Fake SOS check (Every 3 turns, 20% chance)
+        else if (newTurn % 3 === 0 && Math.random() < 0.2) {
+          const possibleNodes: {x: number, y: number}[] = [];
+          for (let y = 0; y < GRID_HEIGHT; y++) {
+            for (let x = newAbyssColumn + 1; x < GRID_WIDTH - 1; x++) {
+              if (x === prev.playerPos.x && y === prev.playerPos.y) continue;
+              if (newMap[y][x].type === 'empty' || newMap[y][x].type === 'ruins') {
+                possibleNodes.push({x, y});
+              }
+            }
+          }
+          if (possibleNodes.length > 0) {
+            const pick = possibleNodes[Math.floor(Math.random() * possibleNodes.length)];
+            newMap = newMap.map(row => row.map(node => node.x === pick.x && node.y === pick.y ? { ...node, type: 'fake_sos', isExplored: true } : node));
+            newSosRemainingTurns = 4;
+            addLog('接收到微弱的SOS信号！位置已在地图上标出。');
+          }
         }
       }
 
@@ -341,12 +437,24 @@ export default function App() {
         })
       );
 
-      addLog(`火炮打击！坐标 (${x}, ${y}) 已被清理。`);
+      const enemyIdx = prev.enemies.findIndex(e => e.x === x && e.y === y);
+      const newEnemies = [...prev.enemies];
+      if (enemyIdx !== -1) {
+        newEnemies.splice(enemyIdx, 1);
+        addLog(`火炮打击！深渊渗透部队已被消灭。`);
+        unlockAchievement('guerrilla');
+      } else {
+        addLog(`火炮打击！坐标 (${x}, ${y}) 已被清理。`);
+      }
+      
+      unlockAchievement('fire_support');
+
       return {
         ...prev,
         artilleryStrikes: prev.artilleryStrikes - 1,
         isTargeting: false,
-        map: newMap
+        map: newMap,
+        enemies: newEnemies
       };
     });
   };
@@ -400,9 +508,20 @@ export default function App() {
     let newBarrierDurability = state.barrierDurability;
     let newStatus = state.gameStatus;
     let newSosRemainingTurns = state.sosRemainingTurns;
+    let newEnemies = [...state.enemies];
 
     // Create a copy of the map to avoid direct mutations
     let newMap = state.map.map(row => row.map(node => ({ ...node })));
+
+    // Check Enemy Collision (Player moves into enemy)
+    const enemyAtTargetIdx = newEnemies.findIndex(e => e.x === newX && e.y === newY);
+    if (enemyAtTargetIdx !== -1) {
+      const dmg = state.ammo >= 5 ? 10 : 35;
+      newHp -= dmg;
+      newEnemies.splice(enemyAtTargetIdx, 1);
+      addLog(`遭遇渗透部队！你发起了突袭。损失了 ${dmg} HP。`);
+      unlockAchievement('guerrilla');
+    }
 
     // Node Interaction
     switch (targetNode.type) {
@@ -414,6 +533,7 @@ export default function App() {
       case 'armory':
         newAmmo += 4;
         addLog('你捡到了一些弹药。');
+        unlockAchievement('fully_armed');
         break;
       case 'special_armory':
         newArtilleryStrikes += 3;
@@ -422,6 +542,7 @@ export default function App() {
         newSan = Math.min(state.maxSan, newSan + 10);
         addLog('你找到了前哨军械库！获得了大量补给和火炮支援。');
         newMap[newY][newX].type = 'ruins';
+        unlockAchievement('fully_armed');
         break;
       case 'medical_point':
         newMedKits += 2;
@@ -436,6 +557,7 @@ export default function App() {
       case 'refugee_point':
         newWaitingTurns = 3;
         addLog('你遇到了撤离的难民，决定原地停留协助他们撤离。');
+        unlockAchievement('humanitarian');
         break;
       case 'mountain':
         newWaitingTurns = 1;
@@ -463,6 +585,13 @@ export default function App() {
         }
         newMap[newY][newX].type = 'ruins';
         newSosRemainingTurns = 0; // SOS handled
+        break;
+      case 'fake_sos':
+        newWaitingTurns = 1;
+        const trapDmg = Math.floor(Math.random() * 15) + 10;
+        newHp -= trapDmg;
+        addLog(`糟糕！这是一个陷阱信号。你遭到了伏击，损失了 ${trapDmg} HP。`);
+        newMap[newY][newX].type = 'ruins';
         break;
       case 'artillery':
         newArtilleryStrikes += 1;
@@ -505,6 +634,36 @@ export default function App() {
         break;
     }
 
+    // Enemy Movement
+    newEnemies = newEnemies.map(enemy => {
+      const dirs = [{x: 0, y: 1}, {x: 0, y: -1}, {x: 1, y: 0}, {x: -1, y: 0}];
+      const validDirs = dirs.filter(d => {
+        const nx = enemy.x + d.x;
+        const ny = enemy.y + d.y;
+        if (nx < 0 || nx >= GRID_WIDTH || ny < 0 || ny >= GRID_HEIGHT) return false;
+        const node = newMap[ny][nx];
+        // Only move to empty or ruins, and not on top of other enemies
+        return (node.type === 'empty' || node.type === 'ruins') && !newEnemies.some(e => e.x === nx && e.y === ny && e.id !== enemy.id);
+      });
+
+      if (validDirs.length > 0) {
+        const dir = validDirs[Math.floor(Math.random() * validDirs.length)];
+        const nx = enemy.x + dir.x;
+        const ny = enemy.y + dir.y;
+        
+        // Check collision with player
+        if (nx === newX && ny === newY) {
+          const dmg = state.ammo >= 5 ? 10 : 35;
+          newHp -= dmg;
+          addLog(`深渊渗透部队撞上了你！损失了 ${dmg} HP。`);
+          unlockAchievement('guerrilla');
+          return null; // Enemy destroyed on collision
+        }
+        return { ...enemy, x: nx, y: ny };
+      }
+      return enemy;
+    }).filter(Boolean) as Enemy[];
+
     // Abyss Advance Logic
     if (newTurn % ABYSS_SPEED === 0) {
       if (newAbyssColumn + 1 === state.barrierColumn && newBarrierDurability > 0) {
@@ -517,7 +676,7 @@ export default function App() {
         // Destroy special nodes hit by Abyss
         newMap.forEach(row => {
           row.forEach(node => {
-            if (node.x === newAbyssColumn && ['special_armory', 'medical_point', 'command_center', 'city', 'sos'].includes(node.type)) {
+            if (node.x === newAbyssColumn && ['special_armory', 'medical_point', 'command_center', 'city', 'sos', 'fake_sos'].includes(node.type)) {
               const typeName = node.type === 'special_armory' ? '军械库' : node.type === 'medical_point' ? '医疗站' : node.type === 'command_center' ? '指挥部' : node.type === 'city' ? '城市' : 'SOS信号源';
               addLog(`噩耗：${typeName}已被深渊主力摧毁！`);
               node.type = 'ruins';
@@ -531,24 +690,45 @@ export default function App() {
     if (newSosRemainingTurns > 0) {
       newSosRemainingTurns -= 1;
       if (newSosRemainingTurns === 0) {
-        newMap = newMap.map(row => row.map(node => node.type === 'sos' ? { ...node, type: 'ruins' } : node));
-        addLog('SOS信号消失了。');
+        newMap = newMap.map(row => row.map(node => (node.type === 'sos' || node.type === 'fake_sos') ? { ...node, type: 'ruins' } : node));
+        addLog('信号消失了。');
       }
-    } else if (newSosRemainingTurns === 0 && Math.random() < 0.4) {
-      const possibleNodes: {x: number, y: number}[] = [];
-      for (let y = 0; y < GRID_HEIGHT; y++) {
-        for (let x = newAbyssColumn + 1; x < GRID_WIDTH - 1; x++) {
-          if (x === newX && y === newY) continue;
-          if (newMap[y][x].type === 'empty' || newMap[y][x].type === 'ruins') {
-            possibleNodes.push({x, y});
+    } else if (newSosRemainingTurns === 0) {
+      // Real SOS check
+      if (Math.random() < 0.4) {
+        const possibleNodes: {x: number, y: number}[] = [];
+        for (let y = 0; y < GRID_HEIGHT; y++) {
+          for (let x = newAbyssColumn + 1; x < GRID_WIDTH - 1; x++) {
+            if (x === newX && y === newY) continue;
+            if (newMap[y][x].type === 'empty' || newMap[y][x].type === 'ruins') {
+              possibleNodes.push({x, y});
+            }
           }
         }
-      }
-      if (possibleNodes.length > 0) {
-        const pick = possibleNodes[Math.floor(Math.random() * possibleNodes.length)];
-        newMap = newMap.map(row => row.map(node => node.x === pick.x && node.y === pick.y ? { ...node, type: 'sos', isExplored: true } : node));
-        newSosRemainingTurns = 4;
-        addLog('接收到微弱的SOS信号！位置已在地图上标出。');
+        if (possibleNodes.length > 0) {
+          const pick = possibleNodes[Math.floor(Math.random() * possibleNodes.length)];
+          newMap = newMap.map(row => row.map(node => node.x === pick.x && node.y === pick.y ? { ...node, type: 'sos', isExplored: true } : node));
+          newSosRemainingTurns = 4;
+          addLog('接收到微弱的SOS信号！位置已在地图上标出。');
+        }
+      } 
+      // Fake SOS check (Every 3 turns, 20% chance)
+      else if (newTurn % 3 === 0 && Math.random() < 0.2) {
+        const possibleNodes: {x: number, y: number}[] = [];
+        for (let y = 0; y < GRID_HEIGHT; y++) {
+          for (let x = newAbyssColumn + 1; x < GRID_WIDTH - 1; x++) {
+            if (x === newX && y === newY) continue;
+            if (newMap[y][x].type === 'empty' || newMap[y][x].type === 'ruins') {
+              possibleNodes.push({x, y});
+            }
+          }
+        }
+        if (possibleNodes.length > 0) {
+          const pick = possibleNodes[Math.floor(Math.random() * possibleNodes.length)];
+          newMap = newMap.map(row => row.map(node => node.x === pick.x && node.y === pick.y ? { ...node, type: 'fake_sos', isExplored: true } : node));
+          newSosRemainingTurns = 4; // Use same duration for fake SOS
+          addLog('接收到微弱的SOS信号！位置已在地图上标出。');
+        }
       }
     }
 
@@ -558,6 +738,7 @@ export default function App() {
         newStatus = 'lost';
         if (newX <= newAbyssColumn) addLog('黑暗追上了你，你成为了深渊的一部分。');
         else addLog('你的意志或肉体已经崩溃。');
+        unlockAchievement('lose');
       }
     }
 
@@ -578,6 +759,7 @@ export default function App() {
       turn: newTurn,
       abyssColumn: newAbyssColumn,
       map: newMap,
+      enemies: newEnemies,
       sosRemainingTurns: newSosRemainingTurns,
       gameStatus: newStatus,
     }));
@@ -586,7 +768,20 @@ export default function App() {
   const resetGame = () => {
     const startY = Math.floor(GRID_HEIGHT / 2);
     const barrierColumn = Math.floor(Math.random() * 4) + 9;
-    setState({
+    
+    // Spawn 2 enemies behind barrier
+    const enemies: Enemy[] = [];
+    while (enemies.length < 2) {
+      const ex = Math.floor(Math.random() * (GRID_WIDTH - (barrierColumn + 2))) + (barrierColumn + 1);
+      const ey = Math.floor(Math.random() * GRID_HEIGHT);
+      if (!enemies.some(e => e.x === ex && e.y === ey)) {
+        enemies.push({ id: `enemy-${enemies.length}`, x: ex, y: ey });
+      }
+    }
+
+    setState(prev => ({
+      ...prev,
+      screen: 'game',
       playerPos: { x: 0, y: startY },
       hp: 100,
       maxHp: 100,
@@ -606,10 +801,11 @@ export default function App() {
       turn: 0,
       abyssColumn: -1,
       map: generateMap(barrierColumn),
+      enemies,
       isGameOver: false,
       gameStatus: 'playing',
       logs: ['轮回再次开始。'],
-    });
+    }));
   };
 
   // Keyboard controls
@@ -629,258 +825,360 @@ export default function App() {
   return (
     <div className="min-h-screen bg-[#0a0a0c] text-zinc-300 font-sans selection:bg-purple-900/30 overflow-hidden flex flex-col">
       
-      {/* Header / Stats */}
-      <header className="border-b border-zinc-800/50 bg-[#0d0d0f] p-4 flex justify-between items-center">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-lg bg-purple-950/30 border border-purple-500/30 flex items-center justify-center">
-            <Skull className="text-purple-400 w-6 h-6" />
-          </div>
-          <div>
-            <h1 className="text-sm font-bold tracking-widest uppercase text-zinc-100">逃离深渊</h1>
-            <p className="text-[10px] text-zinc-500 uppercase tracking-tighter">Abyss Escape Protocol v1.1</p>
-          </div>
-        </div>
-
-        <div className="flex gap-8">
-          <StatItem icon={<Shield className="w-4 h-4 text-emerald-500" />} label="生命" value={state.hp} max={state.maxHp} color="bg-emerald-500" />
-          <StatItem icon={<Eye className="w-4 h-4 text-blue-400" />} label="理智" value={state.san} max={state.maxSan} color="bg-blue-400" />
-          <StatItem icon={<Zap className="w-4 h-4 text-purple-400" />} label="碎片" value={state.shards} isRaw />
-          <StatItem icon={<Crosshair className="w-4 h-4 text-amber-500" />} label="弹药" value={state.ammo} isRaw />
-          <StatItem icon={<Bomb className="w-4 h-4 text-red-400" />} label="火炮" value={state.artilleryStrikes} isRaw />
-          <StatItem icon={<HeartPulse className="w-4 h-4 text-pink-400" />} label="医疗包" value={state.medKits} isRaw />
-        </div>
-      </header>
-
-      {/* Main Game Area */}
-      <main className="flex-1 relative flex flex-col items-center justify-center p-4 gap-6">
-        
-        {/* The Grid Map */}
-        <div 
-          className="relative grid gap-1.5 p-3 bg-zinc-900/20 rounded-2xl border border-zinc-800/30 backdrop-blur-sm"
-          style={{ 
-            gridTemplateColumns: `repeat(${GRID_WIDTH}, minmax(0, 1fr))`,
-            width: 'fit-content'
-          }}
-        >
-          {state.map.map((row, y) => (
-            row.map((node, x) => (
-              <NodeCard 
-                key={node.id} 
-                node={node} 
-                isPlayer={state.playerPos.x === x && state.playerPos.y === y}
-                isAbyss={x <= state.abyssColumn}
-                isTargeting={state.isTargeting}
-                onClick={() => {
-                  if (state.isTargeting) {
-                    handleArtilleryStrike(x, y);
-                  } else {
-                    const dx = x - state.playerPos.x;
-                    const dy = y - state.playerPos.y;
-                    if (Math.abs(dx) + Math.abs(dy) === 1) handleMove(dx, dy);
-                  }
-                }}
-              />
-            ))
-          ))}
-
-          {/* Abyss Shadow Overlay */}
+      {state.screen === 'menu' ? (
+        <div className="flex-1 flex flex-col items-center justify-center p-8 bg-gradient-to-b from-[#0d0d0f] to-[#0a0a0c]">
           <motion.div 
-            className="absolute inset-y-0 left-0 bg-gradient-to-r from-purple-950/60 to-transparent pointer-events-none border-r border-purple-500/20"
-            initial={false}
-            animate={{ 
-              width: `${((state.abyssColumn + 1) / GRID_WIDTH) * 100}%`,
-              opacity: state.abyssColumn >= 0 ? 1 : 0
-            }}
-            transition={{ type: 'spring', stiffness: 50, damping: 20 }}
-          />
-
-          {/* Barrier Indicator */}
-          <AnimatePresence>
-            {state.barrierDurability > 0 && (
-              <motion.div 
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={{ opacity: 0 }}
-                className="absolute inset-y-0 pointer-events-none z-10 flex items-center"
-                style={{ left: `${(state.barrierColumn / GRID_WIDTH) * 100}%` }}
-              >
-                <div className="h-full w-1.5 bg-blue-500 shadow-[0_0_20px_rgba(59,130,246,0.9)] animate-pulse" />
-                <div className="ml-2 px-2 py-1 bg-blue-900/90 border border-blue-500/50 rounded text-[10px] font-bold text-blue-100 uppercase tracking-widest whitespace-nowrap">
-                  旧时代防线: 耐久 {state.barrierDurability}
-                </div>
-              </motion.div>
-            )}
-          </AnimatePresence>
-        </div>
-
-        {/* Upgrade Terminal */}
-        <div className="flex gap-4 p-4 bg-zinc-900/40 rounded-2xl border border-zinc-800/50 backdrop-blur-sm">
-          <div className="flex flex-col justify-center px-4 border-r border-zinc-800/50">
-            <span className="text-[10px] font-bold uppercase tracking-widest text-zinc-500 mb-1">强化终端</span>
-            <div className="flex items-center gap-2">
-              <Zap className="w-4 h-4 text-purple-400" />
-              <span className="text-lg font-mono text-zinc-100">{state.shards}</span>
-            </div>
-          </div>
-          
-          <UpgradeButton 
-            label="生命强化" 
-            desc="+25 Max HP" 
-            cost={UPGRADE_COST} 
-            disabled={state.shards < UPGRADE_COST} 
-            onClick={() => handleUpgrade('hp')}
-            icon={<Shield className="w-4 h-4" />}
-          />
-          <UpgradeButton 
-            label="战斗强化" 
-            desc={`-${Math.round(state.damageReduction * 100)}% 伤害`} 
-            cost={UPGRADE_COST} 
-            disabled={state.shards < UPGRADE_COST || state.damageReduction >= 0.7} 
-            onClick={() => handleUpgrade('combat')}
-            icon={<Crosshair className="w-4 h-4" />}
-          />
-          <UpgradeButton 
-            label="意志强化" 
-            desc={`-${state.moveSanCost.toFixed(1)} SAN/步`} 
-            cost={UPGRADE_COST} 
-            disabled={state.shards < UPGRADE_COST || state.moveSanCost <= 0.5} 
-            onClick={() => handleUpgrade('san')}
-            icon={<Eye className="w-4 h-4" />}
-          />
-          
-          <div className="w-px bg-zinc-800/50 mx-2" />
-          
-          <button 
-            onClick={useMedKit}
-            disabled={state.medKits <= 0 || state.hp >= state.maxHp}
-            className={`
-              flex flex-col items-start p-3 rounded-xl border transition-all w-36
-              ${state.medKits > 0 && state.hp < state.maxHp
-                ? 'bg-zinc-800/40 border-zinc-700/50 hover:bg-zinc-700/60 hover:border-pink-500/50' 
-                : 'bg-zinc-900/20 border-zinc-800/50 opacity-40 grayscale cursor-not-allowed'}
-            `}
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="text-center mb-12"
           >
-            <div className="flex items-center gap-2 mb-1">
-              <HeartPulse className="w-4 h-4 text-pink-400" />
-              <span className="text-[10px] font-bold uppercase tracking-widest text-zinc-100">使用医疗包</span>
+            <div className="w-24 h-24 rounded-2xl bg-purple-950/30 border border-purple-500/30 flex items-center justify-center mx-auto mb-6 shadow-[0_0_30px_rgba(168,85,247,0.2)]">
+              <Skull className="text-purple-400 w-12 h-12" />
             </div>
-            <span className="text-[10px] text-zinc-500 mb-2">恢复 20 HP</span>
-            <div className="mt-auto flex items-center gap-1">
-              <span className="text-xs font-mono text-zinc-300">持有: {state.medKits}</span>
-            </div>
-          </button>
+            <h1 className="text-5xl font-serif italic tracking-tighter text-zinc-100 mb-2">逃离深渊</h1>
+            <p className="text-zinc-500 uppercase tracking-[0.3em] text-xs font-bold">Abyss Escape Protocol</p>
+          </motion.div>
 
-          <button 
-            onClick={toggleTargeting}
-            disabled={state.artilleryStrikes <= 0}
-            className={`
-              flex flex-col items-start p-3 rounded-xl border transition-all w-36
-              ${state.isTargeting 
-                ? 'bg-red-950/40 border-red-500/50 shadow-[0_0_15px_rgba(239,68,68,0.2)]' 
-                : state.artilleryStrikes > 0 
-                  ? 'bg-zinc-800/40 border-zinc-700/50 hover:bg-zinc-700/60 hover:border-red-500/50' 
-                  : 'bg-zinc-900/20 border-zinc-800/50 opacity-40 grayscale cursor-not-allowed'}
-            `}
-          >
-            <div className="flex items-center gap-2 mb-1">
-              <Bomb className={`w-4 h-4 ${state.isTargeting ? 'text-red-400 animate-pulse' : 'text-red-500'}`} />
-              <span className="text-[10px] font-bold uppercase tracking-widest text-zinc-100">火炮打击</span>
-            </div>
-            <span className="text-[10px] text-zinc-500 mb-2">{state.isTargeting ? '请选择目标' : '清理节点怪物'}</span>
-            <div className="mt-auto flex items-center gap-1">
-              <span className="text-xs font-mono text-zinc-300">可用: {state.artilleryStrikes}</span>
-            </div>
-          </button>
-        </div>
-
-        {/* Game Over Overlays */}
-        <AnimatePresence>
-          {state.gameStatus !== 'playing' && (
-            <motion.div 
-              initial={{ opacity: 0, scale: 0.9 }}
-              animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0, scale: 0.9 }}
-              className="absolute inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-md"
-            >
-              <div className="text-center p-12 rounded-3xl border border-zinc-800 bg-zinc-900/50 shadow-2xl max-w-md">
-                {state.gameStatus === 'won' ? (
-                  <>
-                    <div className="w-20 h-20 bg-emerald-500/20 rounded-full flex items-center justify-center mx-auto mb-6 border border-emerald-500/50">
-                      <LogOut className="text-emerald-400 w-10 h-10" />
-                    </div>
-                    <h2 className="text-3xl font-serif italic mb-4 text-emerald-100">逃出生天</h2>
-                    <p className="text-zinc-400 mb-8 leading-relaxed">你穿过了黑暗的帷幕，虽然身上带着永恒的伤痕，但你活了下来。</p>
-                  </>
-                ) : (
-                  <>
-                    <div className="w-20 h-20 bg-red-500/20 rounded-full flex items-center justify-center mx-auto mb-6 border border-red-500/50">
-                      <Skull className="text-red-400 w-10 h-10" />
-                    </div>
-                    <h2 className="text-3xl font-serif italic mb-4 text-red-100">深渊永恒</h2>
-                    <p className="text-zinc-400 mb-8 leading-relaxed">黑暗最终还是追上了你。你的名字将被遗忘在虚无之中。</p>
-                  </>
-                )}
-                <button 
-                  onClick={resetGame}
-                  className="w-full py-4 bg-zinc-100 text-black rounded-xl font-bold hover:bg-white transition-colors flex items-center justify-center gap-2"
-                >
-                  <RefreshCw className="w-5 h-5" />
-                  再次尝试
-                </button>
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
-      </main>
-
-      {/* Footer / Logs & Controls */}
-      <footer className="h-40 border-t border-zinc-800/50 bg-[#0d0d0f] p-6 flex gap-8">
-        <div className="flex-1 flex flex-col gap-2">
-          <div className="flex items-center gap-2 mb-1">
-            <div className="w-1.5 h-1.5 rounded-full bg-purple-500 animate-pulse" />
-            <span className="text-[10px] font-bold uppercase tracking-widest text-zinc-500">生存日志</span>
+          <div className="flex flex-col gap-4 w-64">
+            <MenuButton icon={<Play className="w-5 h-5" />} label="开始游戏" onClick={resetGame} primary />
+            <MenuButton icon={<BookOpen className="w-5 h-5" />} label="游戏教程" onClick={() => setState(p => ({ ...p, screen: 'tutorial' }))} />
+            <MenuButton icon={<Trophy className="w-5 h-5" />} label="成就系统" onClick={() => setState(p => ({ ...p, screen: 'achievements' }))} />
           </div>
-          <div className="flex-1 overflow-y-auto space-y-2 pr-4 custom-scrollbar">
-            {state.logs.map((log, i) => (
-              <motion.p 
-                initial={{ opacity: 0, x: -10 }}
-                animate={{ opacity: 1, x: 0 }}
-                key={i} 
-                className={`text-sm ${i === 0 ? 'text-zinc-100 font-medium' : 'text-zinc-600'}`}
-              >
-                {log}
-              </motion.p>
-            ))}
-          </div>
+          
+          <p className="mt-12 text-[10px] text-zinc-700 uppercase tracking-widest">v1.1.0 - Created by AI Studio</p>
         </div>
+      ) : state.screen === 'tutorial' ? (
+        <div className="flex-1 flex flex-col items-center justify-center p-8 bg-[#0d0d0f]">
+          <div className="max-w-2xl w-full bg-zinc-900/50 border border-zinc-800 rounded-3xl p-8 backdrop-blur-md">
+            <div className="flex items-center gap-4 mb-8">
+              <BookOpen className="text-purple-400 w-8 h-8" />
+              <h2 className="text-2xl font-serif italic text-zinc-100">生存指南</h2>
+            </div>
+            
+            <div className="space-y-6 text-zinc-400 text-sm leading-relaxed">
+              <section>
+                <h3 className="text-zinc-100 font-bold mb-2 uppercase tracking-widest text-xs">目标</h3>
+                <p>深渊正在不断扩张。你必须在被黑暗吞噬前，穿过旧时代的防线，抵达地图最右侧的逃生点。</p>
+              </section>
+              <section>
+                <h3 className="text-zinc-100 font-bold mb-2 uppercase tracking-widest text-xs">威胁</h3>
+                <p>除了不断逼近的深渊，还有潜伏在废墟中的先遣部队。最近，深渊渗透部队（紫色幽灵）也开始在防线后方徘徊，它们会主动移动，请务必小心。</p>
+              </section>
+              <section>
+                <h3 className="text-zinc-100 font-bold mb-2 uppercase tracking-widest text-xs">资源</h3>
+                <p>搜寻军械库获得弹药，寻找医疗站获得医疗包。在城市或响应SOS信号可以获得碎片，用于在强化终端提升你的能力。</p>
+              </section>
+            </div>
 
-        <div className="w-48 flex flex-col items-center justify-center gap-4">
-          {state.waitingTurns > 0 ? (
             <button 
-              onClick={handleWait}
-              className="w-full py-4 bg-blue-600 hover:bg-blue-500 text-white rounded-xl font-bold transition-all flex flex-col items-center justify-center gap-1 shadow-[0_0_20px_rgba(37,99,235,0.3)]"
+              onClick={() => setState(p => ({ ...p, screen: 'menu' }))}
+              className="mt-12 w-full py-4 bg-zinc-800 hover:bg-zinc-700 text-zinc-100 rounded-xl font-bold transition-colors"
             >
-              <div className="flex items-center gap-2">
-                <Timer className="w-5 h-5 animate-spin-slow" />
-                <span>原地休整中</span>
-              </div>
-              <span className="text-[10px] opacity-80 uppercase tracking-tighter">剩余 {state.waitingTurns} 回合</span>
+              返回主菜单
             </button>
-          ) : (
-            <div className="grid grid-cols-3 gap-2">
-              <div />
-              <ControlButton icon={<ChevronUp />} onClick={() => handleMove(0, -1)} />
-              <div />
-              <ControlButton icon={<ChevronLeft />} onClick={() => handleMove(-1, 0)} />
-              <ControlButton icon={<ChevronDown />} onClick={() => handleMove(0, 1)} />
-              <ControlButton icon={<ChevronRight />} onClick={() => handleMove(1, 0)} />
-            </div>
-          )}
-          <p className="text-[10px] text-zinc-600 uppercase tracking-widest">
-            {state.waitingTurns > 0 ? '点击按钮推进回合' : 'WASD / 方向键 移动'}
-          </p>
+          </div>
         </div>
-      </footer>
+      ) : state.screen === 'achievements' ? (
+        <div className="flex-1 flex flex-col items-center justify-center p-8 bg-[#0d0d0f]">
+          <div className="max-w-2xl w-full bg-zinc-900/50 border border-zinc-800 rounded-3xl p-8 backdrop-blur-md">
+            <div className="flex items-center gap-4 mb-8">
+              <Trophy className="text-amber-400 w-8 h-8" />
+              <h2 className="text-2xl font-serif italic text-zinc-100">荣誉勋章</h2>
+            </div>
+            
+            <div className="grid grid-cols-2 gap-4">
+              {state.achievements.map(achievement => (
+                <div 
+                  key={achievement.id}
+                  className={`p-4 rounded-2xl border transition-all ${achievement.unlocked ? 'bg-zinc-800/50 border-amber-500/30' : 'bg-zinc-900/20 border-zinc-800 opacity-40 grayscale'}`}
+                >
+                  <div className="flex items-center gap-3 mb-2">
+                    <div className={`p-2 rounded-lg ${achievement.unlocked ? 'bg-amber-500/20 text-amber-400' : 'bg-zinc-800 text-zinc-600'}`}>
+                      {achievement.unlocked ? <Trophy className="w-4 h-4" /> : <Info className="w-4 h-4" />}
+                    </div>
+                    <h3 className="font-bold text-sm text-zinc-100">{achievement.title}</h3>
+                  </div>
+                  <p className="text-[10px] text-zinc-500 leading-tight">{achievement.description}</p>
+                </div>
+              ))}
+            </div>
+
+            <button 
+              onClick={() => setState(p => ({ ...p, screen: 'menu' }))}
+              className="mt-12 w-full py-4 bg-zinc-800 hover:bg-zinc-700 text-zinc-100 rounded-xl font-bold transition-colors"
+            >
+              返回主菜单
+            </button>
+          </div>
+        </div>
+      ) : (
+        <>
+          {/* Header / Stats */}
+          <header className="border-b border-zinc-800/50 bg-[#0d0d0f] p-4 flex justify-between items-center">
+            <div className="flex items-center gap-3">
+              <button 
+                onClick={() => setState(p => ({ ...p, screen: 'menu' }))}
+                className="w-10 h-10 rounded-lg bg-purple-950/30 border border-purple-500/30 flex items-center justify-center hover:bg-purple-900/40 transition-colors"
+              >
+                <Skull className="text-purple-400 w-6 h-6" />
+              </button>
+              <div>
+                <h1 className="text-sm font-bold tracking-widest uppercase text-zinc-100">逃离深渊</h1>
+                <p className="text-[10px] text-zinc-500 uppercase tracking-tighter">Abyss Escape Protocol v1.1</p>
+              </div>
+            </div>
+
+            <div className="flex gap-8">
+              <StatItem icon={<Shield className="w-4 h-4 text-emerald-500" />} label="生命" value={state.hp} max={state.maxHp} color="bg-emerald-500" />
+              <StatItem icon={<Eye className="w-4 h-4 text-blue-400" />} label="理智" value={state.san} max={state.maxSan} color="bg-blue-400" />
+              <StatItem icon={<Zap className="w-4 h-4 text-purple-400" />} label="碎片" value={state.shards} isRaw />
+              <StatItem icon={<Crosshair className="w-4 h-4 text-amber-500" />} label="弹药" value={state.ammo} isRaw />
+              <StatItem icon={<Bomb className="w-4 h-4 text-red-400" />} label="火炮" value={state.artilleryStrikes} isRaw />
+              <StatItem icon={<HeartPulse className="w-4 h-4 text-pink-400" />} label="医疗包" value={state.medKits} isRaw />
+            </div>
+          </header>
+
+          {/* Main Game Area */}
+          <main className="flex-1 relative flex flex-col items-center justify-center p-4 gap-6">
+            
+            {/* The Grid Map */}
+            <div 
+              className="relative grid gap-1.5 p-3 bg-zinc-900/20 rounded-2xl border border-zinc-800/30 backdrop-blur-sm"
+              style={{ 
+                gridTemplateColumns: `repeat(${GRID_WIDTH}, minmax(0, 1fr))`,
+                width: 'fit-content'
+              }}
+            >
+              {state.map.map((row, y) => (
+                row.map((node, x) => (
+                  <NodeCard 
+                    key={node.id} 
+                    node={node} 
+                    isPlayer={state.playerPos.x === x && state.playerPos.y === y}
+                    isAbyss={x <= state.abyssColumn}
+                    enemy={state.enemies.find(e => e.x === x && e.y === y)}
+                    isTargeting={state.isTargeting}
+                    onClick={() => {
+                      if (state.isTargeting) {
+                        handleArtilleryStrike(x, y);
+                      } else {
+                        const dx = x - state.playerPos.x;
+                        const dy = y - state.playerPos.y;
+                        if (Math.abs(dx) + Math.abs(dy) === 1) handleMove(dx, dy);
+                      }
+                    }}
+                  />
+                ))
+              ))}
+
+              {/* Abyss Shadow Overlay */}
+              <motion.div 
+                className="absolute inset-y-0 left-0 bg-gradient-to-r from-purple-950/60 to-transparent pointer-events-none border-r border-purple-500/20"
+                initial={false}
+                animate={{ 
+                  width: `${((state.abyssColumn + 1) / GRID_WIDTH) * 100}%`,
+                  opacity: state.abyssColumn >= 0 ? 1 : 0
+                }}
+                transition={{ type: 'spring', stiffness: 50, damping: 20 }}
+              />
+
+              {/* Barrier Indicator */}
+              <AnimatePresence>
+                {state.barrierDurability > 0 && (
+                  <motion.div 
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    exit={{ opacity: 0 }}
+                    className="absolute inset-y-0 pointer-events-none z-10 flex items-center"
+                    style={{ left: `${(state.barrierColumn / GRID_WIDTH) * 100}%` }}
+                  >
+                    <div className="h-full w-1.5 bg-blue-500 shadow-[0_0_20px_rgba(59,130,246,0.9)] animate-pulse" />
+                    <div className="ml-2 px-2 py-1 bg-blue-900/90 border border-blue-500/50 rounded text-[10px] font-bold text-blue-100 uppercase tracking-widest whitespace-nowrap">
+                      旧时代防线: 耐久 {state.barrierDurability}
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </div>
+
+            {/* Upgrade Terminal */}
+            <div className="flex gap-4 p-4 bg-zinc-900/40 rounded-2xl border border-zinc-800/50 backdrop-blur-sm">
+              <div className="flex flex-col justify-center px-4 border-r border-zinc-800/50">
+                <span className="text-[10px] font-bold uppercase tracking-widest text-zinc-500 mb-1">强化终端</span>
+                <div className="flex items-center gap-2">
+                  <Zap className="w-4 h-4 text-purple-400" />
+                  <span className="text-lg font-mono text-zinc-100">{state.shards}</span>
+                </div>
+              </div>
+              
+              <UpgradeButton 
+                label="生命强化" 
+                desc="+25 Max HP" 
+                cost={UPGRADE_COST} 
+                disabled={state.shards < UPGRADE_COST} 
+                onClick={() => handleUpgrade('hp')}
+                icon={<Shield className="w-4 h-4" />}
+              />
+              <UpgradeButton 
+                label="战斗强化" 
+                desc={`-${Math.round(state.damageReduction * 100)}% 伤害`} 
+                cost={UPGRADE_COST} 
+                disabled={state.shards < UPGRADE_COST || state.damageReduction >= 0.7} 
+                onClick={() => handleUpgrade('combat')}
+                icon={<Crosshair className="w-4 h-4" />}
+              />
+              <UpgradeButton 
+                label="意志强化" 
+                desc={`-${state.moveSanCost.toFixed(1)} SAN/步`} 
+                cost={UPGRADE_COST} 
+                disabled={state.shards < UPGRADE_COST || state.moveSanCost <= 0.5} 
+                onClick={() => handleUpgrade('san')}
+                icon={<Eye className="w-4 h-4" />}
+              />
+              
+              <div className="w-px bg-zinc-800/50 mx-2" />
+              
+              <button 
+                onClick={useMedKit}
+                disabled={state.medKits <= 0 || state.hp >= state.maxHp}
+                className={`
+                  flex flex-col items-start p-3 rounded-xl border transition-all w-36
+                  ${state.medKits > 0 && state.hp < state.maxHp
+                    ? 'bg-zinc-800/40 border-zinc-700/50 hover:bg-zinc-700/60 hover:border-pink-500/50' 
+                    : 'bg-zinc-900/20 border-zinc-800/50 opacity-40 grayscale cursor-not-allowed'}
+                `}
+              >
+                <div className="flex items-center gap-2 mb-1">
+                  <HeartPulse className="w-4 h-4 text-pink-400" />
+                  <span className="text-[10px] font-bold uppercase tracking-widest text-zinc-100">使用医疗包</span>
+                </div>
+                <span className="text-[10px] text-zinc-500 mb-2">恢复 20 HP</span>
+                <div className="mt-auto flex items-center gap-1">
+                  <span className="text-xs font-mono text-zinc-300">持有: {state.medKits}</span>
+                </div>
+              </button>
+
+              <button 
+                onClick={toggleTargeting}
+                disabled={state.artilleryStrikes <= 0}
+                className={`
+                  flex flex-col items-start p-3 rounded-xl border transition-all w-36
+                  ${state.isTargeting 
+                    ? 'bg-red-950/40 border-red-500/50 shadow-[0_0_15px_rgba(239,68,68,0.2)]' 
+                    : state.artilleryStrikes > 0 
+                      ? 'bg-zinc-800/40 border-zinc-700/50 hover:bg-zinc-700/60 hover:border-red-500/50' 
+                      : 'bg-zinc-900/20 border-zinc-800/50 opacity-40 grayscale cursor-not-allowed'}
+                `}
+              >
+                <div className="flex items-center gap-2 mb-1">
+                  <Bomb className={`w-4 h-4 ${state.isTargeting ? 'text-red-400 animate-pulse' : 'text-red-500'}`} />
+                  <span className="text-[10px] font-bold uppercase tracking-widest text-zinc-100">火炮打击</span>
+                </div>
+                <span className="text-[10px] text-zinc-500 mb-2">{state.isTargeting ? '请选择目标' : '清理节点怪物'}</span>
+                <div className="mt-auto flex items-center gap-1">
+                  <span className="text-xs font-mono text-zinc-300">可用: {state.artilleryStrikes}</span>
+                </div>
+              </button>
+            </div>
+
+            {/* Game Over Overlays */}
+            <AnimatePresence>
+              {state.gameStatus !== 'playing' && (
+                <motion.div 
+                  initial={{ opacity: 0, scale: 0.9 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  exit={{ opacity: 0, scale: 0.9 }}
+                  className="absolute inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-md"
+                >
+                  <div className="text-center p-12 rounded-3xl border border-zinc-800 bg-zinc-900/50 shadow-2xl max-w-md">
+                    {state.gameStatus === 'won' ? (
+                      <>
+                        <div className="w-20 h-20 bg-emerald-500/20 rounded-full flex items-center justify-center mx-auto mb-6 border border-emerald-500/50">
+                          <LogOut className="text-emerald-400 w-10 h-10" />
+                        </div>
+                        <h2 className="text-3xl font-serif italic mb-4 text-emerald-100">逃出生天</h2>
+                        <p className="text-zinc-400 mb-8 leading-relaxed">你穿过了黑暗的帷幕，虽然身上带着永恒的伤痕，但你活了下来。</p>
+                      </>
+                    ) : (
+                      <>
+                        <div className="w-20 h-20 bg-red-500/20 rounded-full flex items-center justify-center mx-auto mb-6 border border-red-500/50">
+                          <Skull className="text-red-400 w-10 h-10" />
+                        </div>
+                        <h2 className="text-3xl font-serif italic mb-4 text-red-100">深渊永恒</h2>
+                        <p className="text-zinc-400 mb-8 leading-relaxed">黑暗最终还是追上了你。你的名字将被遗忘在虚无之中。</p>
+                      </>
+                    )}
+                    <div className="flex gap-4">
+                      <button 
+                        onClick={resetGame}
+                        className="flex-1 py-4 bg-zinc-100 text-black rounded-xl font-bold hover:bg-white transition-colors flex items-center justify-center gap-2"
+                      >
+                        <RefreshCw className="w-5 h-5" />
+                        再次尝试
+                      </button>
+                      <button 
+                        onClick={() => setState(p => ({ ...p, screen: 'menu' }))}
+                        className="flex-1 py-4 bg-zinc-800 text-zinc-100 rounded-xl font-bold hover:bg-zinc-700 transition-colors flex items-center justify-center gap-2"
+                      >
+                        返回主页
+                      </button>
+                    </div>
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </main>
+
+          {/* Footer / Logs & Controls */}
+          <footer className="h-40 border-t border-zinc-800/50 bg-[#0d0d0f] p-6 flex gap-8">
+            <div className="flex-1 flex flex-col gap-2">
+              <div className="flex items-center gap-2 mb-1">
+                <div className="w-1.5 h-1.5 rounded-full bg-purple-500 animate-pulse" />
+                <span className="text-[10px] font-bold uppercase tracking-widest text-zinc-500">生存日志</span>
+              </div>
+              <div className="flex-1 overflow-y-auto space-y-2 pr-4 custom-scrollbar">
+                {state.logs.map((log, i) => (
+                  <motion.p 
+                    initial={{ opacity: 0, x: -10 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    key={i} 
+                    className={`text-sm ${i === 0 ? 'text-zinc-100 font-medium' : 'text-zinc-600'}`}
+                  >
+                    {log}
+                  </motion.p>
+                ))}
+              </div>
+            </div>
+
+            <div className="w-48 flex flex-col items-center justify-center gap-4">
+              {state.waitingTurns > 0 ? (
+                <button 
+                  onClick={handleWait}
+                  className="w-full py-4 bg-blue-600 hover:bg-blue-500 text-white rounded-xl font-bold transition-all flex flex-col items-center justify-center gap-1 shadow-[0_0_20px_rgba(37,99,235,0.3)]"
+                >
+                  <div className="flex items-center gap-2">
+                    <Timer className="w-5 h-5 animate-spin-slow" />
+                    <span>原地休整中</span>
+                  </div>
+                  <span className="text-[10px] opacity-80 uppercase tracking-tighter">剩余 {state.waitingTurns} 回合</span>
+                </button>
+              ) : (
+                <div className="grid grid-cols-3 gap-2">
+                  <div />
+                  <ControlButton icon={<ChevronUp />} onClick={() => handleMove(0, -1)} />
+                  <div />
+                  <ControlButton icon={<ChevronLeft />} onClick={() => handleMove(-1, 0)} />
+                  <ControlButton icon={<ChevronDown />} onClick={() => handleMove(0, 1)} />
+                  <ControlButton icon={<ChevronRight />} onClick={() => handleMove(1, 0)} />
+                </div>
+              )}
+              <p className="text-[10px] text-zinc-600 uppercase tracking-widest">
+                {state.waitingTurns > 0 ? '点击按钮推进回合' : 'WASD / 方向键 移动'}
+              </p>
+            </div>
+          </footer>
+        </>
+      )}
 
       <style>{`
         .custom-scrollbar::-webkit-scrollbar { width: 4px; }
@@ -897,6 +1195,8 @@ export default function App() {
     </div>
   );
 }
+
+// --- Sub-components ---
 
 // --- Sub-components ---
 
@@ -950,11 +1250,12 @@ interface NodeCardProps {
   node: Node;
   isPlayer: boolean;
   isAbyss: boolean;
+  enemy?: Enemy;
   isTargeting: boolean;
   onClick: () => void;
 }
 
-const NodeCard: React.FC<NodeCardProps> = ({ node, isPlayer, isAbyss, isTargeting, onClick }) => {
+const NodeCard: React.FC<NodeCardProps> = ({ node, isPlayer, isAbyss, enemy, isTargeting, onClick }) => {
   const getIcon = () => {
     if (isPlayer) return <motion.div layoutId="player" className="w-6 h-6 bg-white rounded-full shadow-[0_0_15px_rgba(255,255,255,0.5)]" />;
     if (isAbyss) return null;
@@ -962,6 +1263,10 @@ const NodeCard: React.FC<NodeCardProps> = ({ node, isPlayer, isAbyss, isTargetin
     // Targeting visual overlay
     if (isTargeting && node.isExplored && node.type !== 'start' && node.type !== 'exit') {
       return <Target className="w-5 h-5 text-red-500 animate-pulse" />;
+    }
+
+    if (enemy && node.isExplored) {
+      return <Ghost className="w-5 h-5 text-purple-600 animate-bounce" />;
     }
 
     if (!node.isExplored) return <AlertTriangle className="w-4 h-4 text-zinc-800" />;
@@ -976,7 +1281,9 @@ const NodeCard: React.FC<NodeCardProps> = ({ node, isPlayer, isAbyss, isTargetin
       case 'refugee_point': return <Users className="w-5 h-5 text-blue-400 shadow-[0_0_10px_rgba(96,165,250,0.4)]" />;
       case 'mountain': return <Mountain className="w-5 h-5 text-stone-400 shadow-[0_0_10px_rgba(120,113,108,0.4)]" />;
       case 'city': return <Building className="w-5 h-5 text-indigo-400 shadow-[0_0_10px_rgba(129,140,248,0.4)]" />;
-      case 'sos': return <Radio className="w-5 h-5 text-red-500 animate-pulse shadow-[0_0_10px_rgba(239,68,68,0.4)]" />;
+      case 'sos': 
+      case 'fake_sos':
+        return <Radio className="w-5 h-5 text-red-500 animate-pulse shadow-[0_0_10px_rgba(239,68,68,0.4)]" />;
       case 'special_armory': return <Warehouse className="w-5 h-5 text-amber-400 shadow-[0_0_10px_rgba(251,191,36,0.5)]" />;
       case 'command_center': return <TowerControl className="w-5 h-5 text-blue-500 shadow-[0_0_10px_rgba(59,130,246,0.5)]" />;
       case 'ruins': return <div className="w-2 h-2 bg-zinc-700 rounded-full opacity-50" />;
@@ -1003,6 +1310,23 @@ const NodeCard: React.FC<NodeCardProps> = ({ node, isPlayer, isAbyss, isTargetin
     >
       {getIcon()}
     </motion.button>
+  );
+}
+
+function MenuButton({ icon, label, onClick, primary }: { icon: React.ReactNode, label: string, onClick: () => void, primary?: boolean }) {
+  return (
+    <button 
+      onClick={onClick}
+      className={`
+        flex items-center gap-4 px-6 py-4 rounded-xl font-bold transition-all
+        ${primary 
+          ? 'bg-zinc-100 text-black hover:bg-white shadow-[0_0_20px_rgba(255,255,255,0.1)]' 
+          : 'bg-zinc-900/50 text-zinc-400 border border-zinc-800 hover:bg-zinc-800 hover:text-zinc-100'}
+      `}
+    >
+      {icon}
+      <span className="tracking-widest uppercase text-sm">{label}</span>
+    </button>
   );
 }
 
