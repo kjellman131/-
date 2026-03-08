@@ -91,6 +91,9 @@ interface GameState {
   isGameOver: boolean;
   gameStatus: 'playing' | 'won' | 'lost';
   logs: string[];
+  refugeeHits: number;
+  enemyKills: number;
+  mountainHits: number;
 }
 
 // --- Constants ---
@@ -219,6 +222,11 @@ const INITIAL_ACHIEVEMENTS: Achievement[] = [
   { id: 'fully_armed', title: '全副武装', description: '进入前哨军械库', unlocked: false },
   { id: 'guerrilla', title: '游击战', description: '击败一支深渊渗透部队', unlocked: false },
   { id: 'fire_support', title: '火力支援', description: '使用一次火炮打击', unlocked: false },
+  { id: 'rebellion', title: '叛乱', description: '用火炮打击指挥部', unlocked: false },
+  { id: 'accidental_strike', title: '误击', description: '用火炮打击难民撤离点', unlocked: false },
+  { id: 'devil', title: '魔鬼', description: '用火炮打击两个难民撤离点', unlocked: false },
+  { id: 'heavy_punch', title: '重拳出击', description: '消灭两个渗透部队', unlocked: false },
+  { id: 'seclusion', title: '隐居', description: '碰到三次山区', unlocked: false },
 ];
 
 // --- Main Component ---
@@ -252,6 +260,9 @@ export default function App() {
       isGameOver: false,
       gameStatus: 'playing',
       logs: ['你醒来在深渊的边缘。前方有一道旧时代的防线。'],
+      refugeeHits: 0,
+      enemyKills: 0,
+      mountainHits: 0,
     };
   });
 
@@ -318,9 +329,9 @@ export default function App() {
         const validDirs = dirs.filter(d => {
           const nx = enemy.x + d.x;
           const ny = enemy.y + d.y;
-          if (nx < 0 || nx >= GRID_WIDTH || ny < 0 || ny >= GRID_HEIGHT) return false;
+          if (nx <= newAbyssColumn || nx >= GRID_WIDTH || ny < 0 || ny >= GRID_HEIGHT) return false;
           const node = newMap[ny][nx];
-          return (node.type === 'empty' || node.type === 'ruins') && !newEnemies.some(e => e.x === nx && e.y === ny && e.id !== enemy.id);
+          return node.type !== 'mountain' && node.type !== 'exit' && node.type !== 'start' && !newEnemies.some(e => e.x === nx && e.y === ny && e.id !== enemy.id);
         });
 
         if (validDirs.length > 0) {
@@ -338,7 +349,7 @@ export default function App() {
           return { ...enemy, x: nx, y: ny };
         }
         return enemy;
-      }).filter(Boolean) as Enemy[];
+      }).filter(e => e !== null && e.x > newAbyssColumn) as Enemy[];
 
       // SOS Logic
       if (newSosRemainingTurns > 0) {
@@ -428,6 +439,34 @@ export default function App() {
     if (!state.isTargeting || state.artilleryStrikes <= 0) return;
 
     setState(prev => {
+      let newRefugeeHits = prev.refugeeHits;
+      let newEnemyKills = prev.enemyKills;
+      const targetNode = prev.map[y][x];
+
+      if (targetNode.type === 'refugee_point') {
+        newRefugeeHits += 1;
+        unlockAchievement('accidental_strike');
+        if (newRefugeeHits >= 2) {
+          unlockAchievement('devil');
+        }
+        addLog('火炮打击！...那是难民撤离点。你做了什么？');
+      } else if (targetNode.type === 'command_center') {
+        unlockAchievement('rebellion');
+        addLog('你对指挥部发动了火炮打击！防线指挥系统陷入混乱。');
+      } else {
+        const enemyIdx = prev.enemies.findIndex(e => e.x === x && e.y === y);
+        if (enemyIdx !== -1) {
+          newEnemyKills += 1;
+          addLog(`火炮打击！深渊渗透部队已被消灭。`);
+          unlockAchievement('guerrilla');
+          if (newEnemyKills >= 2) {
+            unlockAchievement('heavy_punch');
+          }
+        } else {
+          addLog(`火炮打击！坐标 (${x}, ${y}) 已被清理。`);
+        }
+      }
+
       const newMap = prev.map.map((row, ry) => 
         row.map((node, rx) => {
           if (rx === x && ry === y) {
@@ -437,24 +476,18 @@ export default function App() {
         })
       );
 
-      const enemyIdx = prev.enemies.findIndex(e => e.x === x && e.y === y);
-      const newEnemies = [...prev.enemies];
-      if (enemyIdx !== -1) {
-        newEnemies.splice(enemyIdx, 1);
-        addLog(`火炮打击！深渊渗透部队已被消灭。`);
-        unlockAchievement('guerrilla');
-      } else {
-        addLog(`火炮打击！坐标 (${x}, ${y}) 已被清理。`);
-      }
+      const newEnemies = prev.enemies.filter(e => !(e.x === x && e.y === y));
       
       unlockAchievement('fire_support');
 
       return {
         ...prev,
+        map: newMap,
+        enemies: newEnemies,
         artilleryStrikes: prev.artilleryStrikes - 1,
         isTargeting: false,
-        map: newMap,
-        enemies: newEnemies
+        refugeeHits: newRefugeeHits,
+        enemyKills: newEnemyKills,
       };
     });
   };
@@ -509,6 +542,8 @@ export default function App() {
     let newStatus = state.gameStatus;
     let newSosRemainingTurns = state.sosRemainingTurns;
     let newEnemies = [...state.enemies];
+    let newEnemyKills = state.enemyKills;
+    let newMountainHits = state.mountainHits;
 
     // Create a copy of the map to avoid direct mutations
     let newMap = state.map.map(row => row.map(node => ({ ...node })));
@@ -519,8 +554,12 @@ export default function App() {
       const dmg = state.ammo >= 5 ? 10 : 35;
       newHp -= dmg;
       newEnemies.splice(enemyAtTargetIdx, 1);
+      newEnemyKills += 1;
       addLog(`遭遇渗透部队！你发起了突袭。损失了 ${dmg} HP。`);
       unlockAchievement('guerrilla');
+      if (newEnemyKills >= 2) {
+        unlockAchievement('heavy_punch');
+      }
     }
 
     // Node Interaction
@@ -561,6 +600,10 @@ export default function App() {
         break;
       case 'mountain':
         newWaitingTurns = 1;
+        newMountainHits += 1;
+        if (newMountainHits >= 3) {
+          unlockAchievement('seclusion');
+        }
         if (Math.random() < 0.4) {
           newHp = Math.min(state.maxHp, newHp + 8);
           addLog('翻越山区虽然辛苦，但你发现了一些遗留的物资。');
@@ -640,10 +683,10 @@ export default function App() {
       const validDirs = dirs.filter(d => {
         const nx = enemy.x + d.x;
         const ny = enemy.y + d.y;
-        if (nx < 0 || nx >= GRID_WIDTH || ny < 0 || ny >= GRID_HEIGHT) return false;
+        if (nx <= newAbyssColumn || nx >= GRID_WIDTH || ny < 0 || ny >= GRID_HEIGHT) return false;
         const node = newMap[ny][nx];
-        // Only move to empty or ruins, and not on top of other enemies
-        return (node.type === 'empty' || node.type === 'ruins') && !newEnemies.some(e => e.x === nx && e.y === ny && e.id !== enemy.id);
+        // Allow moving to most tiles except mountain, exit, start
+        return node.type !== 'mountain' && node.type !== 'exit' && node.type !== 'start' && !newEnemies.some(e => e.x === nx && e.y === ny && e.id !== enemy.id);
       });
 
       if (validDirs.length > 0) {
@@ -662,7 +705,7 @@ export default function App() {
         return { ...enemy, x: nx, y: ny };
       }
       return enemy;
-    }).filter(Boolean) as Enemy[];
+    }).filter(e => e !== null && e.x > newAbyssColumn) as Enemy[];
 
     // Abyss Advance Logic
     if (newTurn % ABYSS_SPEED === 0) {
@@ -762,6 +805,8 @@ export default function App() {
       enemies: newEnemies,
       sosRemainingTurns: newSosRemainingTurns,
       gameStatus: newStatus,
+      enemyKills: newEnemyKills,
+      mountainHits: newMountainHits,
     }));
   }, [state]);
 
@@ -769,13 +814,13 @@ export default function App() {
     const startY = Math.floor(GRID_HEIGHT / 2);
     const barrierColumn = Math.floor(Math.random() * 4) + 9;
     
-    // Spawn 2 enemies behind barrier
+    // Spawn exactly 2 enemies on the right side of the barrier
     const enemies: Enemy[] = [];
     while (enemies.length < 2) {
       const ex = Math.floor(Math.random() * (GRID_WIDTH - (barrierColumn + 2))) + (barrierColumn + 1);
       const ey = Math.floor(Math.random() * GRID_HEIGHT);
       if (!enemies.some(e => e.x === ex && e.y === ey)) {
-        enemies.push({ id: `enemy-${enemies.length}`, x: ex, y: ey });
+        enemies.push({ id: `enemy-right-${enemies.length}`, x: ex, y: ey });
       }
     }
 
@@ -805,6 +850,9 @@ export default function App() {
       isGameOver: false,
       gameStatus: 'playing',
       logs: ['轮回再次开始。'],
+      refugeeHits: 0,
+      enemyKills: 0,
+      mountainHits: 0,
     }));
   };
 
@@ -958,6 +1006,7 @@ export default function App() {
                     isAbyss={x <= state.abyssColumn}
                     enemy={state.enemies.find(e => e.x === x && e.y === y)}
                     isTargeting={state.isTargeting}
+                    playerPos={state.playerPos}
                     onClick={() => {
                       if (state.isTargeting) {
                         handleArtilleryStrike(x, y);
@@ -1175,6 +1224,13 @@ export default function App() {
               <p className="text-[10px] text-zinc-600 uppercase tracking-widest">
                 {state.waitingTurns > 0 ? '点击按钮推进回合' : 'WASD / 方向键 移动'}
               </p>
+              <button 
+                onClick={() => setState(p => ({ ...p, screen: 'menu' }))}
+                className="mt-2 text-[10px] text-zinc-500 hover:text-zinc-300 uppercase tracking-[0.2em] transition-colors flex items-center gap-1"
+              >
+                <LogOut className="w-3 h-3" />
+                返回主菜单
+              </button>
             </div>
           </footer>
         </>
@@ -1252,10 +1308,11 @@ interface NodeCardProps {
   isAbyss: boolean;
   enemy?: Enemy;
   isTargeting: boolean;
+  playerPos: { x: number, y: number };
   onClick: () => void;
 }
 
-const NodeCard: React.FC<NodeCardProps> = ({ node, isPlayer, isAbyss, enemy, isTargeting, onClick }) => {
+const NodeCard: React.FC<NodeCardProps> = ({ node, isPlayer, isAbyss, enemy, isTargeting, playerPos, onClick }) => {
   const getIcon = () => {
     if (isPlayer) return <motion.div layoutId="player" className="w-6 h-6 bg-white rounded-full shadow-[0_0_15px_rgba(255,255,255,0.5)]" />;
     if (isAbyss) return null;
@@ -1265,7 +1322,7 @@ const NodeCard: React.FC<NodeCardProps> = ({ node, isPlayer, isAbyss, enemy, isT
       return <Target className="w-5 h-5 text-red-500 animate-pulse" />;
     }
 
-    if (enemy && node.isExplored) {
+    if (enemy) {
       return <Ghost className="w-5 h-5 text-purple-600 animate-bounce" />;
     }
 
