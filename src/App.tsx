@@ -232,6 +232,25 @@ const INITIAL_ACHIEVEMENTS: Achievement[] = [
 // --- Main Component ---
 
 export default function App() {
+  const [isPortrait, setIsPortrait] = useState(false);
+
+  useEffect(() => {
+    const checkOrientation = () => {
+      const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent) || window.innerWidth < 1024;
+      const portrait = window.innerHeight > window.innerWidth;
+      setIsPortrait(isMobile && portrait);
+    };
+
+    checkOrientation();
+    window.addEventListener('resize', checkOrientation);
+    window.addEventListener('orientationchange', checkOrientation);
+
+    return () => {
+      window.removeEventListener('resize', checkOrientation);
+      window.removeEventListener('orientationchange', checkOrientation);
+    };
+  }, []);
+
   const [state, setState] = useState<GameState>(() => {
     const barrierColumn = Math.floor(Math.random() * 4) + 9;
     return {
@@ -872,6 +891,29 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-[#0a0a0c] text-zinc-300 font-sans selection:bg-purple-900/30 overflow-hidden flex flex-col">
+      <AnimatePresence>
+        {isPortrait && (
+          <motion.div 
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-black z-[9999] flex flex-col items-center justify-center text-white p-10 text-center"
+          >
+            <motion.div
+              animate={{ rotate: 90 }}
+              transition={{ repeat: Infinity, duration: 2, ease: "easeInOut" }}
+              className="mb-8"
+            >
+              <RefreshCw className="w-16 h-16 text-purple-500" />
+            </motion.div>
+            <h2 className="text-2xl font-bold mb-4 tracking-tighter uppercase">请旋转设备</h2>
+            <p className="text-zinc-500 text-sm leading-relaxed max-w-xs">
+              为了获得最佳游戏体验，请将手机横屏运行。<br/>
+              <span className="opacity-50 text-[10px] block mt-2">(Please rotate your device to landscape mode)</span>
+            </p>
+          </motion.div>
+        )}
+      </AnimatePresence>
       
       {state.screen === 'menu' ? (
         <div className="flex-1 flex flex-col items-center justify-center p-8 bg-gradient-to-b from-[#0d0d0f] to-[#0a0a0c]">
